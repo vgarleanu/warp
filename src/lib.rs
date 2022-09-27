@@ -95,11 +95,9 @@ pub mod redirect;
 pub mod reject;
 pub mod reply;
 mod route;
-mod server;
-mod service;
+//mod server;
+//mod service;
 pub mod test;
-#[cfg(feature = "tls")]
-mod tls;
 mod transport;
 
 pub use self::error::Error;
@@ -107,6 +105,8 @@ pub use self::filter::Filter;
 // This otherwise shows a big dump of re-exports in the doc homepage,
 // with zero context, so just hide it from the docs. Doc examples
 // on each can show that a convenient import exists.
+#[doc(hidden)]
+pub use self::filter::wrap_fn;
 #[cfg(feature = "compression")]
 #[doc(hidden)]
 pub use self::filters::compression;
@@ -129,7 +129,6 @@ pub use self::filters::{
     // cors() function
     cors::cors,
     ext,
-    fs,
     header,
     // header() function
     header::header,
@@ -144,16 +143,10 @@ pub use self::filters::{
     query,
     // query() function
     query::query,
-    sse,
     trace,
     // trace() function
     trace::trace,
 };
-// ws() function
-pub use self::filter::wrap_fn;
-#[cfg(feature = "websocket")]
-#[doc(hidden)]
-pub use self::filters::ws::ws;
 #[doc(hidden)]
 pub use self::redirect::redirect;
 #[doc(hidden)]
@@ -163,12 +156,10 @@ pub use self::reject::{reject, Rejection};
 pub use self::reply::{reply, Reply};
 #[cfg(feature = "tls")]
 pub use self::server::TlsServer;
-pub use self::server::{serve, Server};
-pub use self::service::service;
+//pub use self::server::{serve, Server};
+//pub use self::service::service;
 #[doc(hidden)]
 pub use http;
-#[doc(hidden)]
-pub use hyper;
 
 #[doc(hidden)]
 pub use bytes::Buf;
@@ -176,4 +167,5 @@ pub use bytes::Buf;
 pub use futures_util::{Future, Sink, Stream};
 #[doc(hidden)]
 
-pub(crate) type Request = http::Request<hyper::Body>;
+pub(crate) type Body = bytes::Bytes;
+pub(crate) type Request = http::Request<Body>;

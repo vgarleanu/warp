@@ -20,9 +20,8 @@ use crate::reject::Rejection;
 /// ```
 /// use warp::{Filter, filters::BoxedFilter, Reply};
 ///
-/// pub fn assets_filter() -> BoxedFilter<(impl Reply,)> {
+/// pub fn assets_filter() -> BoxedFilter<()> {
 ///     warp::path("assets")
-///         .and(warp::fs::dir("./assets"))
 ///         .boxed()
 /// }
 /// ```

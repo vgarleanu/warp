@@ -82,41 +82,24 @@
 //! }
 //! ```
 use std::convert::TryFrom;
-use std::error::Error as StdError;
-use std::fmt;
 use std::future::Future;
 use std::net::SocketAddr;
-#[cfg(feature = "websocket")]
-use std::pin::Pin;
-#[cfg(feature = "websocket")]
-use std::task::Context;
-#[cfg(feature = "websocket")]
-use std::task::{self, Poll};
 
 use bytes::Bytes;
-#[cfg(feature = "websocket")]
-use futures_channel::mpsc;
-#[cfg(feature = "websocket")]
-use futures_util::StreamExt;
-use futures_util::{future, FutureExt, TryFutureExt};
+use futures_util::future;
+use futures_util::FutureExt;
 use http::{
     header::{HeaderName, HeaderValue},
     Response,
 };
 use serde::Serialize;
 use serde_json;
-#[cfg(feature = "websocket")]
-use tokio::sync::oneshot;
 
 use crate::filter::Filter;
-#[cfg(feature = "websocket")]
-use crate::filters::ws::Message;
 use crate::reject::IsReject;
 use crate::reply::Reply;
 use crate::route::{self, Route};
 use crate::Request;
-#[cfg(feature = "websocket")]
-use crate::{Sink, Stream};
 
 use self::inner::OneOrTuple;
 
@@ -128,12 +111,6 @@ pub fn request() -> RequestBuilder {
     }
 }
 
-/// Starts a new test `WsBuilder`.
-#[cfg(feature = "websocket")]
-pub fn ws() -> WsBuilder {
-    WsBuilder { req: request() }
-}
-
 /// A request builder for testing filters.
 ///
 /// See [module documentation](crate::test) for an overview.
@@ -142,29 +119,6 @@ pub fn ws() -> WsBuilder {
 pub struct RequestBuilder {
     remote_addr: Option<SocketAddr>,
     req: Request,
-}
-
-/// A Websocket builder for testing filters.
-///
-/// See [module documentation](crate::test) for an overview.
-#[cfg(feature = "websocket")]
-#[must_use = "WsBuilder does nothing on its own"]
-#[derive(Debug)]
-pub struct WsBuilder {
-    req: RequestBuilder,
-}
-
-/// A test client for Websocket filters.
-#[cfg(feature = "websocket")]
-pub struct WsClient {
-    tx: mpsc::UnboundedSender<crate::ws::Message>,
-    rx: mpsc::UnboundedReceiver<Result<crate::ws::Message, crate::error::Error>>,
-}
-
-/// An error from Websocket filter tests.
-#[derive(Debug)]
-pub struct WsError {
-    cause: Box<dyn StdError + Send + Sync>,
 }
 
 impl RequestBuilder {
@@ -377,8 +331,8 @@ impl RequestBuilder {
         assert!(!route::is_set(), "nested test filter calls");
 
         let route = Route::new(self.req, self.remote_addr);
-        let mut fut = Box::pin(
-            route::set(&route, move || f.filter(crate::filter::Internal)).then(|result| {
+        let mut fut = Box::pin(route::set(&route, move || {
+            f.filter(crate::filter::Internal).then(|result| async {
                 let res = match result {
                     Ok(rep) => rep.into_response(),
                     Err(rej) => {
@@ -387,13 +341,14 @@ impl RequestBuilder {
                     }
                 };
                 let (parts, body) = res.into_parts();
-                hyper::body::to_bytes(body).map_ok(|chunk| Response::from_parts(parts, chunk))
-            }),
-        );
+
+                Response::from_parts(parts, body)
+            })
+        }));
 
         let fut = future::poll_fn(move |cx| route::set(&route, || fut.as_mut().poll(cx)));
 
-        fut.await.expect("reply shouldn't fail")
+        fut.await
     }
 
     fn apply_filter<F>(self, f: &F) -> impl Future<Output = Result<F::Extract, F::Error>>
@@ -410,303 +365,6 @@ impl RequestBuilder {
             f.filter(crate::filter::Internal)
         }));
         future::poll_fn(move |cx| route::set(&route, || fut.as_mut().poll(cx)))
-    }
-}
-
-#[cfg(feature = "websocket")]
-impl WsBuilder {
-    /// Sets the request path of this builder.
-    ///
-    /// The default is not set is `/`.
-    ///
-    /// # Example
-    ///
-    /// ```
-    /// let req = warp::test::ws()
-    ///     .path("/chat");
-    /// ```
-    ///
-    /// # Panic
-    ///
-    /// This panics if the passed string is not able to be parsed as a valid
-    /// `Uri`.
-    pub fn path(self, p: &str) -> Self {
-        WsBuilder {
-            req: self.req.path(p),
-        }
-    }
-
-    /// Set a header for this request.
-    ///
-    /// # Example
-    ///
-    /// ```
-    /// let req = warp::test::ws()
-    ///     .header("foo", "bar");
-    /// ```
-    ///
-    /// # Panic
-    ///
-    /// This panics if the passed strings are not able to be parsed as a valid
-    /// `HeaderName` and `HeaderValue`.
-    pub fn header<K, V>(self, key: K, value: V) -> Self
-    where
-        HeaderName: TryFrom<K>,
-        HeaderValue: TryFrom<V>,
-    {
-        WsBuilder {
-            req: self.req.header(key, value),
-        }
-    }
-
-    /// Execute this Websocket request against the provided filter.
-    ///
-    /// If the handshake succeeds, returns a `WsClient`.
-    ///
-    /// # Example
-    ///
-    /// ```no_run
-    /// use futures_util::future;
-    /// use warp::Filter;
-    /// #[tokio::main]
-    /// # async fn main() {
-    ///
-    /// // Some route that accepts websockets (but drops them immediately).
-    /// let route = warp::ws()
-    ///     .map(|ws: warp::ws::Ws| {
-    ///         ws.on_upgrade(|_| future::ready(()))
-    ///     });
-    ///
-    /// let client = warp::test::ws()
-    ///     .handshake(route)
-    ///     .await
-    ///     .expect("handshake");
-    /// # }
-    /// ```
-    pub async fn handshake<F>(self, f: F) -> Result<WsClient, WsError>
-    where
-        F: Filter + Clone + Send + Sync + 'static,
-        F::Extract: Reply + Send,
-        F::Error: IsReject + Send,
-    {
-        let (upgraded_tx, upgraded_rx) = oneshot::channel();
-        let (wr_tx, wr_rx) = mpsc::unbounded();
-        let (rd_tx, rd_rx) = mpsc::unbounded();
-
-        tokio::spawn(async move {
-            use tokio_tungstenite::tungstenite::protocol;
-
-            let (addr, srv) = crate::serve(f).bind_ephemeral(([127, 0, 0, 1], 0));
-
-            let mut req = self
-                .req
-                .header("connection", "upgrade")
-                .header("upgrade", "websocket")
-                .header("sec-websocket-version", "13")
-                .header("sec-websocket-key", "dGhlIHNhbXBsZSBub25jZQ==")
-                .req;
-
-            let query_string = match req.uri().query() {
-                Some(q) => format!("?{}", q),
-                None => String::from(""),
-            };
-
-            let uri = format!("http://{}{}{}", addr, req.uri().path(), query_string)
-                .parse()
-                .expect("addr + path is valid URI");
-
-            *req.uri_mut() = uri;
-
-            // let mut rt = current_thread::Runtime::new().unwrap();
-            tokio::spawn(srv);
-
-            let upgrade = ::hyper::Client::builder()
-                .build(AddrConnect(addr))
-                .request(req)
-                .and_then(hyper::upgrade::on);
-
-            let upgraded = match upgrade.await {
-                Ok(up) => {
-                    let _ = upgraded_tx.send(Ok(()));
-                    up
-                }
-                Err(err) => {
-                    let _ = upgraded_tx.send(Err(err));
-                    return;
-                }
-            };
-            let ws = crate::ws::WebSocket::from_raw_socket(
-                upgraded,
-                protocol::Role::Client,
-                Default::default(),
-            )
-            .await;
-
-            let (tx, rx) = ws.split();
-            let write = wr_rx.map(Ok).forward(tx).map(|_| ());
-
-            let read = rx
-                .take_while(|result| match result {
-                    Err(_) => future::ready(false),
-                    Ok(m) => future::ready(!m.is_close()),
-                })
-                .for_each(move |item| {
-                    rd_tx.unbounded_send(item).expect("ws receive error");
-                    future::ready(())
-                });
-
-            future::join(write, read).await;
-        });
-
-        match upgraded_rx.await {
-            Ok(Ok(())) => Ok(WsClient {
-                tx: wr_tx,
-                rx: rd_rx,
-            }),
-            Ok(Err(err)) => Err(WsError::new(err)),
-            Err(_canceled) => panic!("websocket handshake thread panicked"),
-        }
-    }
-}
-
-#[cfg(feature = "websocket")]
-impl WsClient {
-    /// Send a "text" websocket message to the server.
-    pub async fn send_text(&mut self, text: impl Into<String>) {
-        self.send(crate::ws::Message::text(text)).await;
-    }
-
-    /// Send a websocket message to the server.
-    pub async fn send(&mut self, msg: crate::ws::Message) {
-        self.tx.unbounded_send(msg).unwrap();
-    }
-
-    /// Receive a websocket message from the server.
-    pub async fn recv(&mut self) -> Result<crate::filters::ws::Message, WsError> {
-        self.rx
-            .next()
-            .await
-            .map(|result| result.map_err(WsError::new))
-            .unwrap_or_else(|| {
-                // websocket is closed
-                Err(WsError::new("closed"))
-            })
-    }
-
-    /// Assert the server has closed the connection.
-    pub async fn recv_closed(&mut self) -> Result<(), WsError> {
-        self.rx
-            .next()
-            .await
-            .map(|result| match result {
-                Ok(msg) => Err(WsError::new(format!("received message: {:?}", msg))),
-                Err(err) => Err(WsError::new(err)),
-            })
-            .unwrap_or_else(|| {
-                // closed successfully
-                Ok(())
-            })
-    }
-
-    fn pinned_tx(self: Pin<&mut Self>) -> Pin<&mut mpsc::UnboundedSender<crate::ws::Message>> {
-        let this = Pin::into_inner(self);
-        Pin::new(&mut this.tx)
-    }
-}
-
-#[cfg(feature = "websocket")]
-impl fmt::Debug for WsClient {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("WsClient").finish()
-    }
-}
-
-#[cfg(feature = "websocket")]
-impl Sink<crate::ws::Message> for WsClient {
-    type Error = WsError;
-
-    fn poll_ready(
-        self: Pin<&mut Self>,
-        context: &mut Context<'_>,
-    ) -> Poll<Result<(), Self::Error>> {
-        self.pinned_tx().poll_ready(context).map_err(WsError::new)
-    }
-
-    fn start_send(self: Pin<&mut Self>, message: Message) -> Result<(), Self::Error> {
-        self.pinned_tx().start_send(message).map_err(WsError::new)
-    }
-
-    fn poll_flush(
-        self: Pin<&mut Self>,
-        context: &mut Context<'_>,
-    ) -> Poll<Result<(), Self::Error>> {
-        self.pinned_tx().poll_flush(context).map_err(WsError::new)
-    }
-
-    fn poll_close(
-        self: Pin<&mut Self>,
-        context: &mut Context<'_>,
-    ) -> Poll<Result<(), Self::Error>> {
-        self.pinned_tx().poll_close(context).map_err(WsError::new)
-    }
-}
-
-#[cfg(feature = "websocket")]
-impl Stream for WsClient {
-    type Item = Result<crate::ws::Message, WsError>;
-
-    fn poll_next(self: Pin<&mut Self>, context: &mut Context<'_>) -> Poll<Option<Self::Item>> {
-        let this = Pin::into_inner(self);
-        let rx = Pin::new(&mut this.rx);
-        match rx.poll_next(context) {
-            Poll::Ready(Some(result)) => Poll::Ready(Some(result.map_err(WsError::new))),
-            Poll::Ready(None) => Poll::Ready(None),
-            Poll::Pending => Poll::Pending,
-        }
-    }
-}
-
-// ===== impl WsError =====
-
-#[cfg(feature = "websocket")]
-impl WsError {
-    fn new<E: Into<Box<dyn StdError + Send + Sync>>>(cause: E) -> Self {
-        WsError {
-            cause: cause.into(),
-        }
-    }
-}
-
-impl fmt::Display for WsError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "websocket error: {}", self.cause)
-    }
-}
-
-impl StdError for WsError {
-    fn description(&self) -> &str {
-        "websocket error"
-    }
-}
-
-// ===== impl AddrConnect =====
-
-#[cfg(feature = "websocket")]
-#[derive(Clone)]
-struct AddrConnect(SocketAddr);
-
-#[cfg(feature = "websocket")]
-impl tower_service::Service<::http::Uri> for AddrConnect {
-    type Response = ::tokio::net::TcpStream;
-    type Error = ::std::io::Error;
-    type Future = Pin<Box<dyn Future<Output = Result<Self::Response, Self::Error>> + Send>>;
-
-    fn poll_ready(&mut self, _cx: &mut task::Context<'_>) -> Poll<Result<(), Self::Error>> {
-        Poll::Ready(Ok(()))
-    }
-
-    fn call(&mut self, _: ::http::Uri) -> Self::Future {
-        Box::pin(tokio::net::TcpStream::connect(self.0))
     }
 }
 

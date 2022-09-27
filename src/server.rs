@@ -8,6 +8,7 @@ use std::net::SocketAddr;
 use std::path::Path;
 
 use futures_util::{future, FutureExt, TryFuture, TryStream, TryStreamExt};
+#[cfg(not(feature = "no-socket"))]
 use hyper::server::conn::AddrIncoming;
 use hyper::service::{make_service_fn, service_fn};
 use hyper::Server as HyperServer;
@@ -128,6 +129,7 @@ where
     <F::Future as TryFuture>::Error: IsReject,
 {
     /// Run this `Server` forever on the current thread.
+    #[cfg(not(feature = "no-socket"))]
     pub async fn run(self, addr: impl Into<SocketAddr>) {
         let (addr, fut) = self.bind_ephemeral(addr);
         let span = tracing::info_span!("Server::run", ?addr);
@@ -170,6 +172,7 @@ where
     /// # Panics
     ///
     /// Panics if we are unable to bind to the provided address.
+    #[cfg(not(feature = "no-socket"))]
     pub fn bind(self, addr: impl Into<SocketAddr> + 'static) -> impl Future<Output = ()> + 'static {
         let (_, fut) = self.bind_ephemeral(addr);
         fut
@@ -180,6 +183,7 @@ where
     ///
     /// In case we are unable to bind to the specified address, resolves to an
     /// error and logs the reason.
+    #[cfg(not(feature = "no-socket"))]
     pub async fn try_bind(self, addr: impl Into<SocketAddr>) {
         let addr = addr.into();
         let srv = match try_bind!(self, &addr) {
@@ -206,6 +210,7 @@ where
     /// # Panics
     ///
     /// Panics if we are unable to bind to the provided address.
+    #[cfg(not(feature = "no-socket"))]
     pub fn bind_ephemeral(
         self,
         addr: impl Into<SocketAddr>,
@@ -227,6 +232,7 @@ where
     ///
     /// Returns the bound address and a `Future` that can be executed on
     /// the current runtime.
+    #[cfg(not(feature = "no-socket"))]
     pub fn try_bind_ephemeral(
         self,
         addr: impl Into<SocketAddr>,
@@ -275,6 +281,7 @@ where
     /// let _ = tx.send(());
     /// # }
     /// ```
+    #[cfg(not(feature = "no-socket"))]
     pub fn bind_with_graceful_shutdown(
         self,
         addr: impl Into<SocketAddr> + 'static,
@@ -293,6 +300,7 @@ where
     ///
     /// When the signal completes, the server will start the graceful shutdown
     /// process.
+    #[cfg(not(feature = "no-socket"))]
     pub fn try_bind_with_graceful_shutdown(
         self,
         addr: impl Into<SocketAddr> + 'static,
@@ -373,7 +381,21 @@ where
     {
         let service = into_service!(self.filter);
 
+        #[derive(Clone)]
+        struct TokioExecutor;
+
+        impl<Fut> hyper::rt::Executor<Fut> for TokioExecutor
+        where
+            Fut: Future + Send + 'static,
+            <Fut as Future>::Output: Send
+        {
+            fn execute(&self, fut: Fut) {
+                tokio::spawn(fut);
+            }
+        }
+
         let srv = HyperServer::builder(hyper::server::accept::from_stream(incoming.into_stream()))
+            .executor(TokioExecutor)
             .http1_pipeline_flush(self.pipeline)
             .serve(service)
             .await;
@@ -381,6 +403,8 @@ where
         if let Err(err) = srv {
             tracing::error!("server error: {}", err);
         }
+
+        tracing::info!("hyper quit");
     }
 
     // Generally shouldn't be used, as it can slow down non-pipelined responses.

@@ -39,9 +39,9 @@ use std::error::Error as StdError;
 use std::fmt;
 
 use crate::generic::{Either, One};
+use crate::Body;
 use http::header::{HeaderName, HeaderValue, CONTENT_TYPE};
 use http::StatusCode;
-use hyper::Body;
 use serde::Serialize;
 use serde_json;
 

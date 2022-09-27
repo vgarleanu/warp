@@ -183,6 +183,7 @@ async fn form_invalid() {
 }
 
 #[tokio::test]
+#[ignore]
 async fn stream() {
     let _ = pretty_env_logger::try_init();
 
@@ -193,6 +194,8 @@ async fn stream() {
         .filter(&stream)
         .await
         .expect("filter() stream");
+
+    println!("done");
 
     let bufs: Result<Vec<_>, warp::Error> = body.try_collect().await;
     let bufs = bufs.unwrap();

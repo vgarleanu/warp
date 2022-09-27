@@ -8,10 +8,9 @@ use std::pin::Pin;
 use std::task::{Context, Poll};
 
 use bytes::{Buf, Bytes};
-use futures_util::{future, ready, Stream, TryFutureExt};
+use futures_util::{future, Stream};
 use headers::ContentLength;
 use http::header::CONTENT_TYPE;
-use hyper::Body;
 use mime;
 use serde::de::DeserializeOwned;
 use serde_json;
@@ -19,6 +18,7 @@ use serde_urlencoded;
 
 use crate::filter::{filter_fn, filter_fn_one, Filter, FilterBase};
 use crate::reject::{self, Rejection};
+use crate::Body;
 
 type BoxError = Box<dyn StdError + Send + Sync>;
 
@@ -45,8 +45,7 @@ pub(crate) fn body() -> impl Filter<Extract = (Body,), Error = Rejection> + Copy
 /// use warp::Filter;
 ///
 /// // Limit the upload to 4kb...
-/// let upload = warp::body::content_length_limit(4096)
-///     .and(warp::body::aggregate());
+/// let upload = warp::body::content_length_limit(4096);
 /// ```
 pub fn content_length_limit(limit: u64) -> impl Filter<Extract = (), Error = Rejection> + Copy {
     crate::filters::header::header2()
@@ -104,50 +103,7 @@ pub fn stream(
 ///     });
 /// ```
 pub fn bytes() -> impl Filter<Extract = (Bytes,), Error = Rejection> + Copy {
-    body().and_then(|body: hyper::Body| {
-        hyper::body::to_bytes(body).map_err(|err| {
-            tracing::debug!("to_bytes error: {}", err);
-            reject::known(BodyReadError(err))
-        })
-    })
-}
-
-/// Returns a `Filter` that matches any request and extracts a `Future` of an
-/// aggregated body.
-///
-/// The `Buf` may contain multiple, non-contiguous buffers. This can be more
-/// performant (by reducing copies) when receiving large bodies.
-///
-/// # Warning
-///
-/// This does not have a default size limit, it would be wise to use one to
-/// prevent a overly large request from using too much memory.
-///
-/// # Example
-///
-/// ```
-/// use warp::{Buf, Filter};
-///
-/// fn full_body(mut body: impl Buf) {
-///     // It could have several non-contiguous slices of memory...
-///     while body.has_remaining() {
-///         println!("slice = {:?}", body.chunk());
-///         let cnt = body.chunk().len();
-///         body.advance(cnt);
-///     }
-/// }
-///
-/// let route = warp::body::content_length_limit(1024 * 32)
-///     .and(warp::body::aggregate())
-///     .map(full_body);
-/// ```
-pub fn aggregate() -> impl Filter<Extract = (impl Buf,), Error = Rejection> + Copy {
-    body().and_then(|body: ::hyper::Body| {
-        hyper::body::aggregate(body).map_err(|err| {
-            tracing::debug!("aggregate error: {}", err);
-            reject::known(BodyReadError(err))
-        })
-    })
+    body()
 }
 
 /// Returns a `Filter` that matches any request and extracts a `Future` of a
@@ -207,7 +163,7 @@ pub fn json<T: DeserializeOwned + Send>() -> impl Filter<Extract = (T,), Error =
 /// ```
 pub fn form<T: DeserializeOwned + Send>() -> impl Filter<Extract = (T,), Error = Rejection> + Copy {
     is_content_type::<Form>()
-        .and(aggregate())
+        .and(bytes())
         .and_then(|buf| async move {
             Form::decode(buf).map_err(|err| {
                 tracing::debug!("request form body error: {}", err);
@@ -295,19 +251,27 @@ struct BodyStream {
 impl Stream for BodyStream {
     type Item = Result<Bytes, crate::Error>;
 
-    fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
-        let opt_item = ready!(Pin::new(&mut self.get_mut().body).poll_next(cx));
+    fn poll_next(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        let body = core::mem::take(&mut self.get_mut().body);
 
-        match opt_item {
-            None => Poll::Ready(None),
-            Some(item) => {
-                let stream_buf = item.map_err(crate::Error::new);
-
-                Poll::Ready(Some(stream_buf))
-            }
+        if body.is_empty() {
+            return Poll::Ready(Some(Err(crate::Error::new(BodyEmpty))));
         }
+
+        Poll::Ready(Some(Ok(body)))
     }
 }
+
+#[derive(Debug)]
+pub(crate) struct BodyEmpty;
+
+impl fmt::Display for BodyEmpty {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "Body stream ended")
+    }
+}
+
+impl StdError for BodyEmpty {}
 
 // ===== Rejections =====
 
@@ -330,11 +294,11 @@ impl StdError for BodyDeserializeError {
 }
 
 #[derive(Debug)]
-pub(crate) struct BodyReadError(::hyper::Error);
+pub(crate) struct BodyReadError;
 
 impl fmt::Display for BodyReadError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "Request body read error: {}", self.0)
+        write!(f, "Request body read error")
     }
 }
 

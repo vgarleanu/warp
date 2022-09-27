@@ -23,7 +23,6 @@ futures-util = { version = "0.3", default-features = false, features = ["sink"] 
 futures-channel = { version = "0.3.17", features = ["sink"]}
 headers = "0.3"
 http = "0.2"
-hyper = { version = "0.14", features = ["stream", "server", "http1", "http2", "tcp", "client"] }
 log = "0.4"
 mime = "0.3"
 mime_guess = "2.0.0"
@@ -32,7 +31,7 @@ scoped-tls = "1.0"
 serde = "1.0"
 serde_json = "1.0"
 serde_urlencoded = "0.7"
-tokio = { version = "1.0", features = ["fs", "sync", "time"] }
+tokio = { version = "1.0", features = ["fs", "sync", "time", "fs"] }
 tokio-stream = "0.1.1"
 tokio-util = { version = "0.7", features = ["io"] }
 tracing = { version = "0.1.21", default-features = false, features = ["log", "std"] }
@@ -54,7 +53,7 @@ tokio-stream = { version = "0.1.1", features = ["net"] }
 listenfd = "0.3"
 
 [features]
-default = ["multipart", "websocket"]
+default = ["multipart"]
 websocket = ["tokio-tungstenite"]
 tls = ["tokio-rustls"]
 
@@ -62,6 +61,7 @@ tls = ["tokio-rustls"]
 compression = ["compression-brotli", "compression-gzip"]
 compression-brotli = ["async-compression/brotli"]
 compression-gzip = ["async-compression/deflate", "async-compression/gzip"]
+no-socket = []
 
 [profile.release]
 codegen-units = 1
@@ -74,25 +74,3 @@ incremental = false
 [[test]]
 name = "multipart"
 required-features = ["multipart"]
-
-[[test]]
-name = "ws"
-required-features = ["websocket"]
-
-[[example]]
-name = "compression"
-required-features = ["compression"]
-
-[[example]]
-name = "unix_socket"
-
-[[example]]
-name = "websockets"
-required-features = ["websocket"]
-
-[[example]]
-name = "websockets_chat"
-required-features = ["websocket"]
-
-[[example]]
-name = "query_string"

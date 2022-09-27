@@ -61,12 +61,12 @@ use std::convert::Infallible;
 use std::error::Error as StdError;
 use std::fmt;
 
+use crate::Body;
 use http::{
     self,
     header::{HeaderValue, CONTENT_TYPE},
     StatusCode,
 };
-use hyper::Body;
 
 pub(crate) use self::sealed::{CombineRejection, IsReject};
 
@@ -280,13 +280,9 @@ enum_known! {
     LengthRequired(LengthRequired),
     PayloadTooLarge(PayloadTooLarge),
     UnsupportedMediaType(UnsupportedMediaType),
-    FileOpenError(crate::fs::FileOpenError),
-    FilePermissionError(crate::fs::FilePermissionError),
     BodyReadError(crate::body::BodyReadError),
     BodyDeserializeError(crate::body::BodyDeserializeError),
     CorsForbidden(crate::cors::CorsForbidden),
-    #[cfg(feature = "websocket")]
-    MissingConnectionUpgrade(crate::ws::MissingConnectionUpgrade),
     MissingExtension(crate::ext::MissingExtension),
     BodyConsumedMultipleTimes(crate::body::BodyConsumedMultipleTimes),
 }
@@ -425,15 +421,13 @@ impl Rejections {
                 | Known::InvalidQuery(_)
                 | Known::BodyReadError(_)
                 | Known::BodyDeserializeError(_) => StatusCode::BAD_REQUEST,
-                #[cfg(feature = "websocket")]
-                Known::MissingConnectionUpgrade(_) => StatusCode::BAD_REQUEST,
                 Known::LengthRequired(_) => StatusCode::LENGTH_REQUIRED,
                 Known::PayloadTooLarge(_) => StatusCode::PAYLOAD_TOO_LARGE,
                 Known::UnsupportedMediaType(_) => StatusCode::UNSUPPORTED_MEDIA_TYPE,
-                Known::FilePermissionError(_) | Known::CorsForbidden(_) => StatusCode::FORBIDDEN,
-                Known::FileOpenError(_)
-                | Known::MissingExtension(_)
-                | Known::BodyConsumedMultipleTimes(_) => StatusCode::INTERNAL_SERVER_ERROR,
+                Known::CorsForbidden(_) => StatusCode::FORBIDDEN,
+                Known::MissingExtension(_) | Known::BodyConsumedMultipleTimes(_) => {
+                    StatusCode::INTERNAL_SERVER_ERROR
+                }
             },
             Rejections::Custom(..) => StatusCode::INTERNAL_SERVER_ERROR,
             Rejections::Combined(ref a, ref b) => preferred(a, b).status(),
@@ -792,8 +786,7 @@ mod tests {
 
     async fn response_body_string(resp: crate::reply::Response) -> String {
         let (_, body) = resp.into_parts();
-        let body_bytes = hyper::body::to_bytes(body).await.expect("failed concat");
-        String::from_utf8_lossy(&body_bytes).to_string()
+        String::from_utf8_lossy(&body).to_string()
     }
 
     #[test]

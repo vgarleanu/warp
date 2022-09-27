@@ -6,7 +6,7 @@ mod map_err;
 mod or;
 mod or_else;
 mod recover;
-pub(crate) mod service;
+//pub(crate) mod service;
 mod then;
 mod unify;
 mod untuple_one;

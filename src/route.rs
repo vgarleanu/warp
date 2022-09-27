@@ -3,8 +3,7 @@ use std::cell::RefCell;
 use std::mem;
 use std::net::SocketAddr;
 
-use hyper::Body;
-
+use crate::Body;
 use crate::Request;
 
 scoped_thread_local!(static ROUTE: RefCell<Route>);
@@ -130,8 +129,9 @@ impl Route {
     pub(crate) fn take_body(&mut self) -> Option<Body> {
         match self.body {
             BodyState::Ready => {
-                let body = mem::replace(self.req.body_mut(), Body::empty());
+                let body = mem::replace(self.req.body_mut(), Body::new());
                 self.body = BodyState::Taken;
+                println!("taking body");
                 Some(body)
             }
             BodyState::Taken => None,

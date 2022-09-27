@@ -11,7 +11,6 @@ pub mod compression;
 pub mod cookie;
 pub mod cors;
 pub mod ext;
-pub mod fs;
 pub mod header;
 pub mod host;
 pub mod log;
@@ -21,9 +20,7 @@ pub mod multipart;
 pub mod path;
 pub mod query;
 pub mod reply;
-pub mod sse;
+//pub mod sse;
 pub mod trace;
-#[cfg(feature = "websocket")]
-pub mod ws;
 
 pub use crate::filter::BoxedFilter;
